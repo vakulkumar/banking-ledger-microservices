@@ -14,10 +14,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -29,7 +26,6 @@ public class TransactionService {
 
     private final TransactionRepository transactionRepository;
     private final RabbitTemplate rabbitTemplate;
-    private final WebClient accountServiceClient;
     private final Counter transactionCounter;
     private final Counter transactionAmountCounter;
     private final Timer transactionTimer;
@@ -43,16 +39,16 @@ public class TransactionService {
     @Value("${rabbitmq.routing-key.transaction-failed}")
     private String transactionFailedRoutingKey;
 
+    @Value("${rabbitmq.routing-key.transaction-initiated:transaction.initiated}")
+    private String transactionInitiatedRoutingKey;
+
     public TransactionService(
             TransactionRepository transactionRepository,
             RabbitTemplate rabbitTemplate,
-            WebClient.Builder webClientBuilder,
-            @Value("${services.account-service.url}") String accountServiceUrl,
             MeterRegistry meterRegistry) {
 
         this.transactionRepository = transactionRepository;
         this.rabbitTemplate = rabbitTemplate;
-        this.accountServiceClient = webClientBuilder.baseUrl(accountServiceUrl).build();
 
         // Custom metrics
         this.transactionCounter = Counter.builder("banking_transactions_total")
@@ -84,29 +80,10 @@ public class TransactionService {
 
             transaction = transactionRepository.save(transaction);
 
-            try {
-                // Call account service to credit the balance
-                updateAccountBalance(request.getAccountId(), request.getAmount(), "CREDIT");
+            // Publish initiated event
+            publishTransactionEvent(transaction, transactionInitiatedRoutingKey);
 
-                transaction.setStatus(TransactionStatus.COMPLETED);
-                transaction.setCompletedAt(LocalDateTime.now());
-                transaction = transactionRepository.save(transaction);
-
-                // Publish success event
-                publishTransactionEvent(transaction, transactionCompletedRoutingKey);
-                transactionCounter.increment();
-                transactionAmountCounter.increment(request.getAmount().doubleValue());
-
-                log.info("Deposit completed successfully: transactionId={}", transaction.getId());
-            } catch (Exception e) {
-                log.error("Deposit failed: {}", e.getMessage());
-                transaction.setStatus(TransactionStatus.FAILED);
-                transaction.setErrorMessage(e.getMessage());
-                transaction = transactionRepository.save(transaction);
-
-                // Publish failure event
-                publishTransactionEvent(transaction, transactionFailedRoutingKey);
-            }
+            log.info("Deposit initiated: transactionId={}", transaction.getId());
 
             return mapToResponse(transaction);
         });
@@ -128,29 +105,10 @@ public class TransactionService {
 
             transaction = transactionRepository.save(transaction);
 
-            try {
-                // Call account service to debit the balance
-                updateAccountBalance(request.getAccountId(), request.getAmount(), "DEBIT");
+            // Publish initiated event
+            publishTransactionEvent(transaction, transactionInitiatedRoutingKey);
 
-                transaction.setStatus(TransactionStatus.COMPLETED);
-                transaction.setCompletedAt(LocalDateTime.now());
-                transaction = transactionRepository.save(transaction);
-
-                // Publish success event
-                publishTransactionEvent(transaction, transactionCompletedRoutingKey);
-                transactionCounter.increment();
-                transactionAmountCounter.increment(request.getAmount().doubleValue());
-
-                log.info("Withdrawal completed successfully: transactionId={}", transaction.getId());
-            } catch (Exception e) {
-                log.error("Withdrawal failed: {}", e.getMessage());
-                transaction.setStatus(TransactionStatus.FAILED);
-                transaction.setErrorMessage(e.getMessage());
-                transaction = transactionRepository.save(transaction);
-
-                // Publish failure event
-                publishTransactionEvent(transaction, transactionFailedRoutingKey);
-            }
+            log.info("Withdrawal initiated: transactionId={}", transaction.getId());
 
             return mapToResponse(transaction);
         });
@@ -178,39 +136,10 @@ public class TransactionService {
 
             transaction = transactionRepository.save(transaction);
 
-            try {
-                // Debit from source account
-                updateAccountBalance(request.getSourceAccountId(), request.getAmount(), "DEBIT");
+            // Publish initiated event
+            publishTransactionEvent(transaction, transactionInitiatedRoutingKey);
 
-                try {
-                    // Credit to target account
-                    updateAccountBalance(request.getTargetAccountId(), request.getAmount(), "CREDIT");
-                } catch (Exception e) {
-                    // Rollback: credit back to source account
-                    log.warn("Transfer credit failed, rolling back debit: {}", e.getMessage());
-                    updateAccountBalance(request.getSourceAccountId(), request.getAmount(), "CREDIT");
-                    throw e;
-                }
-
-                transaction.setStatus(TransactionStatus.COMPLETED);
-                transaction.setCompletedAt(LocalDateTime.now());
-                transaction = transactionRepository.save(transaction);
-
-                // Publish success event
-                publishTransactionEvent(transaction, transactionCompletedRoutingKey);
-                transactionCounter.increment();
-                transactionAmountCounter.increment(request.getAmount().doubleValue());
-
-                log.info("Transfer completed successfully: transactionId={}", transaction.getId());
-            } catch (Exception e) {
-                log.error("Transfer failed: {}", e.getMessage());
-                transaction.setStatus(TransactionStatus.FAILED);
-                transaction.setErrorMessage(e.getMessage());
-                transaction = transactionRepository.save(transaction);
-
-                // Publish failure event
-                publishTransactionEvent(transaction, transactionFailedRoutingKey);
-            }
+            log.info("Transfer initiated: transactionId={}", transaction.getId());
 
             return mapToResponse(transaction);
         });
@@ -229,19 +158,6 @@ public class TransactionService {
                 .stream()
                 .map(this::mapToResponse)
                 .collect(Collectors.toList());
-    }
-
-    private void updateAccountBalance(UUID accountId, BigDecimal amount, String operation) {
-        try {
-            accountServiceClient.put()
-                    .uri("/api/accounts/{id}/balance", accountId)
-                    .bodyValue(new BalanceUpdateRequest(amount, operation))
-                    .retrieve()
-                    .bodyToMono(Object.class)
-                    .block();
-        } catch (WebClientResponseException e) {
-            throw new AccountServiceException("Account service error: " + e.getResponseBodyAsString());
-        }
     }
 
     private void publishTransactionEvent(Transaction transaction, String routingKey) {
@@ -281,10 +197,6 @@ public class TransactionService {
                 .build();
     }
 
-    // Inner class for balance update request
-    record BalanceUpdateRequest(BigDecimal amount, String operation) {
-    }
-
     // Exception classes
     public static class TransactionNotFoundException extends RuntimeException {
         public TransactionNotFoundException(String message) {
@@ -292,9 +204,4 @@ public class TransactionService {
         }
     }
 
-    public static class AccountServiceException extends RuntimeException {
-        public AccountServiceException(String message) {
-            super(message);
-        }
-    }
 }
