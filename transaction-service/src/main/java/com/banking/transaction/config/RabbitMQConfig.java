@@ -27,6 +27,12 @@ public class RabbitMQConfig {
     @Value("${rabbitmq.routing-key.transaction-failed}")
     private String transactionFailedRoutingKey;
 
+    @Value("${rabbitmq.queue.transaction-result:transaction.result.queue}")
+    private String transactionResultQueue;
+
+    @Value("${rabbitmq.routing-key.transaction-result:transaction.result}")
+    private String transactionResultRoutingKey;
+
     @Bean
     public TopicExchange exchange() {
         return new TopicExchange(exchangeName);
@@ -60,6 +66,18 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(transactionFailedQueue)
                 .to(exchange)
                 .with(transactionFailedRoutingKey);
+    }
+
+    @Bean
+    public Queue transactionResultQueue() {
+        return QueueBuilder.durable(transactionResultQueue).build();
+    }
+
+    @Bean
+    public Binding transactionResultBinding(Queue transactionResultQueue, TopicExchange exchange) {
+        return BindingBuilder.bind(transactionResultQueue)
+                .to(exchange)
+                .with(transactionResultRoutingKey);
     }
 
     // Dead Letter Queue

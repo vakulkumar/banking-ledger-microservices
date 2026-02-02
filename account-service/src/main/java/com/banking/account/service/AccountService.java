@@ -3,6 +3,7 @@ package com.banking.account.service;
 import com.banking.account.dto.AccountResponse;
 import com.banking.account.dto.CreateAccountRequest;
 import com.banking.account.dto.UpdateBalanceRequest;
+import com.banking.account.event.TransactionEvent;
 import com.banking.account.model.Account;
 import com.banking.account.model.AccountStatus;
 import com.banking.account.repository.AccountRepository;
@@ -105,6 +106,67 @@ public class AccountService {
 
         log.info("Balance updated successfully for account: {}, new balance: {}", id, newBalance);
         return mapToResponse(updatedAccount);
+    }
+
+    @Transactional
+    public void processTransaction(TransactionEvent event) {
+        log.info("Processing transaction event: {}", event);
+
+        if ("TRANSFER".equals(event.getTransactionType())) {
+            // Debit source
+            Account source = accountRepository.findByIdWithLock(event.getSourceAccountId())
+                    .orElseThrow(() -> new AccountNotFoundException("Source account not found: " + event.getSourceAccountId()));
+
+            if (source.getStatus() != AccountStatus.ACTIVE) {
+                throw new AccountNotActiveException("Source account not active");
+            }
+
+            if (source.getBalance().compareTo(event.getAmount()) < 0) {
+                throw new InsufficientBalanceException("Insufficient balance in source account");
+            }
+
+            source.setBalance(source.getBalance().subtract(event.getAmount()));
+            accountRepository.save(source);
+
+            // Credit target
+            Account target = accountRepository.findByIdWithLock(event.getTargetAccountId())
+                    .orElseThrow(() -> new AccountNotFoundException("Target account not found: " + event.getTargetAccountId()));
+
+            if (target.getStatus() != AccountStatus.ACTIVE) {
+                throw new AccountNotActiveException("Target account not active");
+            }
+
+            target.setBalance(target.getBalance().add(event.getAmount()));
+            accountRepository.save(target);
+
+        } else if ("DEPOSIT".equals(event.getTransactionType())) {
+            Account account = accountRepository.findByIdWithLock(event.getTargetAccountId())
+                    .orElseThrow(() -> new AccountNotFoundException("Account not found: " + event.getTargetAccountId()));
+
+            if (account.getStatus() != AccountStatus.ACTIVE) {
+                throw new AccountNotActiveException("Account is not active: " + event.getTargetAccountId());
+            }
+
+            account.setBalance(account.getBalance().add(event.getAmount()));
+            accountRepository.save(account);
+
+        } else if ("WITHDRAWAL".equals(event.getTransactionType())) {
+            Account account = accountRepository.findByIdWithLock(event.getSourceAccountId())
+                    .orElseThrow(() -> new AccountNotFoundException("Account not found: " + event.getSourceAccountId()));
+
+            if (account.getStatus() != AccountStatus.ACTIVE) {
+                throw new AccountNotActiveException("Account is not active: " + event.getSourceAccountId());
+            }
+
+            if (account.getBalance().compareTo(event.getAmount()) < 0) {
+                throw new InsufficientBalanceException("Insufficient balance for account: " + event.getSourceAccountId());
+            }
+
+            account.setBalance(account.getBalance().subtract(event.getAmount()));
+            accountRepository.save(account);
+        }
+
+        balanceUpdateCounter.increment();
     }
 
     private String generateAccountNumber() {
