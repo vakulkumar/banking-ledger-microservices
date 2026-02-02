@@ -18,6 +18,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
 
     List<Transaction> findByStatus(TransactionStatus status);
 
+    List<Transaction> findByStatusAndCreatedAtBefore(TransactionStatus status, LocalDateTime dateTime);
+
     List<Transaction> findByCreatedAtBetween(LocalDateTime start, LocalDateTime end);
 
     List<Transaction> findBySourceAccountIdOrTargetAccountIdOrderByCreatedAtDesc(
