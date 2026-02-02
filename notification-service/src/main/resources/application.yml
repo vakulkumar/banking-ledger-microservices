@@ -1,0 +1,32 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: notification-service
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: banking
+    password: banking123
+
+# Actuator & Prometheus
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# RabbitMQ Queue names
+rabbitmq:
+  exchange:
+    name: banking.exchange
+  queue:
+    transaction-completed: transaction.completed.queue
+    transaction-failed: transaction.failed.queue

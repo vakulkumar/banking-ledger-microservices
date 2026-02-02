@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: banking-ledger
+data:
+  POSTGRES_USER: banking
+  POSTGRES_PASSWORD: banking123
+  POSTGRES_DB: banking
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: banking-ledger
+data:
+  RABBITMQ_DEFAULT_USER: banking
+  RABBITMQ_DEFAULT_PASS: banking123
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: services-config
+  namespace: banking-ledger
+data:
+  SPRING_DATASOURCE_USERNAME: banking
+  SPRING_DATASOURCE_PASSWORD: banking123
+  SPRING_RABBITMQ_HOST: rabbitmq
+  SPRING_RABBITMQ_USERNAME: banking
+  SPRING_RABBITMQ_PASSWORD: banking123
