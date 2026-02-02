@@ -6,7 +6,9 @@ import com.banking.account.dto.UpdateBalanceRequest;
 import com.banking.account.event.TransactionEvent;
 import com.banking.account.model.Account;
 import com.banking.account.model.AccountStatus;
+import com.banking.account.model.ProcessedTransaction;
 import com.banking.account.repository.AccountRepository;
+import com.banking.account.repository.ProcessedTransactionRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -24,11 +26,15 @@ import java.util.stream.Collectors;
 public class AccountService {
 
     private final AccountRepository accountRepository;
+    private final ProcessedTransactionRepository processedTransactionRepository;
     private final Counter accountCreatedCounter;
     private final Counter balanceUpdateCounter;
 
-    public AccountService(AccountRepository accountRepository, MeterRegistry meterRegistry) {
+    public AccountService(AccountRepository accountRepository,
+                          ProcessedTransactionRepository processedTransactionRepository,
+                          MeterRegistry meterRegistry) {
         this.accountRepository = accountRepository;
+        this.processedTransactionRepository = processedTransactionRepository;
         this.accountCreatedCounter = Counter.builder("banking_accounts_created_total")
                 .description("Total number of accounts created")
                 .register(meterRegistry);
@@ -112,6 +118,12 @@ public class AccountService {
     public void processTransaction(TransactionEvent event) {
         log.info("Processing transaction event: {}", event);
 
+        // Idempotency check
+        if (processedTransactionRepository.existsById(event.getTransactionId())) {
+            log.info("Transaction already processed: {}", event.getTransactionId());
+            return;
+        }
+
         if ("TRANSFER".equals(event.getTransactionType())) {
             // Debit source
             Account source = accountRepository.findByIdWithLock(event.getSourceAccountId())
@@ -167,6 +179,18 @@ public class AccountService {
         }
 
         balanceUpdateCounter.increment();
+
+        // Save processed transaction
+        ProcessedTransaction processed = ProcessedTransaction.builder()
+                .transactionId(event.getTransactionId())
+                .status("COMPLETED")
+                .build();
+        processedTransactionRepository.save(processed);
+    }
+
+    @Transactional(readOnly = true)
+    public ProcessedTransaction getTransactionStatus(UUID transactionId) {
+        return processedTransactionRepository.findById(transactionId).orElse(null);
     }
 
     private String generateAccountNumber() {
